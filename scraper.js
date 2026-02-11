@@ -113,17 +113,43 @@ export async function searchVendor(vendorName, productName) {
 }
 
 // ==========================================
-// WEB SCRAPING WITH CHEERIO
+// ENHANCED WEB SCRAPING WITH ANTI-BOT BYPASS
 // ==========================================
-export async function scrapeWebsite(url) {
+export async function scrapeWebsite(url, retryCount = 0) {
+  const MAX_RETRIES = 2;
+  
   try {
-    console.log(`Scraping: ${url}`);
+    console.log(`[SCRAPER] Attempting to scrape: ${url} (attempt ${retryCount + 1}/${MAX_RETRIES + 1})`);
+    
+    // Rotate through multiple realistic browser user agents
+    const userAgents = [
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15'
+    ];
+    
+    const userAgent = userAgents[retryCount % userAgents.length];
     
     const response = await axios.get(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        'User-Agent': userAgent,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Cache-Control': 'max-age=0',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1'
       },
-      timeout: 10000
+      timeout: 15000,
+      maxRedirects: 5,
+      validateStatus: function (status) {
+        return status >= 200 && status < 300; // Only accept 2xx status codes
+      }
     });
 
     const $ = cheerio.load(response.data);
@@ -238,6 +264,8 @@ export async function scrapeWebsite(url) {
       .trim()
       .substring(0, 5000); // Limit to first 5000 chars
     
+    console.log(`[SCRAPER] ✅ Successfully scraped: ${url}`);
+    
     return {
       url,
       title,
@@ -251,7 +279,75 @@ export async function scrapeWebsite(url) {
     };
     
   } catch (error) {
-    console.error('Web scraping error:', error.message);
-    throw new Error(`Failed to scrape website: ${error.message}`);
+    console.error(`[SCRAPER] ❌ Error scraping ${url}:`, error.message);
+    
+    // Handle 403 Forbidden - website is blocking the scraper
+    if (error.response && error.response.status === 403) {
+      console.warn(`[SCRAPER] ⚠️ 403 Forbidden: Website is blocking scraper`);
+      
+      // Retry with different user agent if retries available
+      if (retryCount < MAX_RETRIES) {
+        console.log(`[SCRAPER] 🔄 Retrying with different user agent...`);
+        await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1))); // Exponential backoff
+        return scrapeWebsite(url, retryCount + 1);
+      }
+      
+      // If all retries failed, return limited data from URL metadata
+      console.warn(`[SCRAPER] ⚠️ All retries failed. Returning basic metadata only.`);
+      return createFallbackData(url, 'Website is blocking automated access (403 Forbidden). Using limited data from other sources.');
+    }
+    
+    // Handle timeout errors
+    if (error.code === 'ECONNABORTED') {
+      if (retryCount < MAX_RETRIES) {
+        console.log(`[SCRAPER] 🔄 Timeout - retrying...`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        return scrapeWebsite(url, retryCount + 1);
+      }
+      return createFallbackData(url, 'Request timeout - website took too long to respond.');
+    }
+    
+    // Handle other network errors
+    if (retryCount < MAX_RETRIES && (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED')) {
+      console.log(`[SCRAPER] 🔄 Network error - retrying...`);
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      return scrapeWebsite(url, retryCount + 1);
+    }
+    
+    // For all other errors, return fallback data
+    console.error(`[SCRAPER] ❌ Failed to scrape after ${retryCount + 1} attempts`);
+    return createFallbackData(url, `Failed to access website: ${error.message}`);
   }
 }
+
+// Helper function to create fallback data when scraping fails
+function createFallbackData(url, errorMessage) {
+  // Extract basic info from URL
+  let productName = 'Unknown Product';
+  try {
+    const urlObj = new URL(url);
+    const pathname = urlObj.pathname;
+    const cleanPath = pathname.replace(/^\/|\/$/g, '').replace(/\.html?$/i, '');
+    productName = cleanPath
+      .split('-')
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ');
+  } catch (e) {
+    // Ignore URL parsing errors
+  }
+  
+  return {
+    url,
+    title: productName,
+    price: 'Not available (scraping blocked)',
+    description: `Unable to extract full product details. ${errorMessage}`,
+    specifications: {},
+    images: [],
+    metaTags: {},
+    rawText: `Product information could not be extracted from ${url}. The website may be blocking automated access. Please check vendor-provided files or search results for complete information.`,
+    scrapedAt: new Date().toISOString(),
+    scrapingError: errorMessage,
+    isLimitedData: true
+  };
+}
+
