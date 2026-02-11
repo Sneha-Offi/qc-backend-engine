@@ -9,7 +9,7 @@ const anthropic = new Anthropic({
 // AI-POWERED CONFLICT DETECTION
 // ==========================================
 export async function detectConflicts(data) {
-  const { productData, vendorFiles, webSearchResults } = data;
+  const { productData, vendorFiles, webSearchResults, category, categoryAttributes } = data;
   
   // If no API key, return basic rule-based analysis
   if (!process.env.ANTHROPIC_API_KEY) {
@@ -21,7 +21,7 @@ export async function detectConflicts(data) {
     console.log('🤖 Running AI-powered conflict detection...');
     
     // Prepare data for AI analysis
-    const prompt = buildAnalysisPrompt(productData, vendorFiles, webSearchResults);
+    const prompt = buildAnalysisPrompt(productData, vendorFiles, webSearchResults, category, categoryAttributes);
     
     const response = await anthropic.messages.create({
       model: 'claude-3-5-sonnet-20241022',
@@ -50,8 +50,17 @@ export async function detectConflicts(data) {
 // ==========================================
 // BUILD ANALYSIS PROMPT FOR CLAUDE
 // ==========================================
-function buildAnalysisPrompt(productData, vendorFiles, webSearchResults) {
+function buildAnalysisPrompt(productData, vendorFiles, webSearchResults, category, categoryAttributes) {
+  // Get category-specific info
+  const categoryName = category || 'Unknown';
+  const detectedAttrs = categoryAttributes?.categoryAttributes || {};
+  const requiredAttrs = categoryAttributes?.requiredAttributes || {};
+  
   return `You are a B2B product quality control analyst for a corporate gifting platform (OffiNeeds.com). 
+
+**IMPORTANT: This product has been automatically classified as category: ${categoryName}**
+
+**ONLY extract and validate attributes relevant to ${categoryName} products. IGNORE attributes from other categories.**
 
 Analyze the following product data sources and identify ANY conflicts, inconsistencies, missing information, or red flags:
 
@@ -59,8 +68,16 @@ Analyze the following product data sources and identify ANY conflicts, inconsist
 Title: ${productData.title}
 Price: ${productData.price}
 Description: ${productData.description}
-Specifications: ${JSON.stringify(productData.specifications, null, 2)}
 URL: ${productData.url}
+
+# DETECTED CATEGORY-SPECIFIC ATTRIBUTES:
+Category: ${categoryName}
+Extracted Attributes: ${JSON.stringify(detectedAttrs, null, 2)}
+Required Critical Attributes: ${JSON.stringify(requiredAttrs.critical || [], null, 2)}
+Required Recommended Attributes: ${JSON.stringify(requiredAttrs.recommended || [], null, 2)}
+
+# RAW SPECIFICATIONS (For reference only - filter by category):
+${JSON.stringify(productData.specifications, null, 2)}
 
 # VENDOR FILES DATA:
 ${vendorFiles.map((file, idx) => `
@@ -76,13 +93,18 @@ Link: ${result.link}
 `).join('\n')}
 
 # YOUR TASK:
-Analyze and provide a comprehensive QC report focusing on:
+Analyze and provide a comprehensive QC report focusing ONLY on ${categoryName}-specific attributes:
 
-1. **CRITICAL CONFLICTS**: Price mismatches, MOQ inconsistencies, specification conflicts
-2. **MISSING DATA**: Required B2B attributes not found (MOQ, lead time, branding methods, material specs, printable areas)
+1. **CRITICAL CONFLICTS**: Price mismatches, MOQ inconsistencies, ${categoryName}-specific attribute conflicts
+2. **MISSING DATA**: Required attributes for ${categoryName} products (${requiredAttrs.critical?.join(', ') || 'MOQ, price, specifications'})
 3. **BRAND VALIDATION**: Verify brand name authenticity across all sources
 4. **DATA COMPLETENESS**: Score each data source (0-100%)
 5. **RED FLAGS**: Suspicious patterns, inconsistent information, missing critical details
+
+**IMPORTANT FILTERING RULES:**
+- For ${categoryName} products, ONLY validate these attribute types: ${requiredAttrs.critical?.join(', ') || 'category-specific attributes'}
+- IGNORE attributes from other categories (e.g., if category is "Home & Living", ignore "pages", "ruling", "binding" which are for "Office Accessories")
+- Flag if the product appears to be miscategorized
 
 # OUTPUT FORMAT (JSON):
 Return ONLY valid JSON with this exact structure:
@@ -90,7 +112,7 @@ Return ONLY valid JSON with this exact structure:
 {
   "conflicts": [
     {
-      "type": "price_mismatch|moq_conflict|spec_conflict|missing_data|brand_issue",
+      "type": "price_mismatch|moq_conflict|spec_conflict|missing_data|brand_issue|category_mismatch",
       "severity": "critical|high|medium|low",
       "description": "Clear description of the issue",
       "sources": ["source1", "source2"],
@@ -98,8 +120,8 @@ Return ONLY valid JSON with this exact structure:
     }
   ],
   "missingAttributes": {
-    "critical": ["list of critical missing fields"],
-    "recommended": ["list of recommended fields to add"]
+    "critical": ["list of critical missing fields specific to ${categoryName}"],
+    "recommended": ["list of recommended fields for ${categoryName}"]
   },
   "brandValidation": {
     "brandName": "detected brand name or 'Unknown'",
