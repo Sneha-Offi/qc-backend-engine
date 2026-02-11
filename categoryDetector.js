@@ -188,7 +188,11 @@ export const CATEGORY_ATTRIBUTES = {
 // DETECT CATEGORY FROM PRODUCT DATA
 // ==========================================
 export function detectProductCategory(productData) {
-  // Prioritize title heavily (3x weight), then description, then raw text
+  // PRIORITY SYSTEM:
+  // 1. Title match = ABSOLUTE (10x weight) - Title is the source of truth
+  // 2. Description match = High (3x weight)  
+  // 3. Raw text match = Very low (0.1x weight) - Often contaminated with wrong data
+  
   const titleText = (productData.title || '').toLowerCase();
   const descriptionText = (productData.description || '').toLowerCase();
   const rawText = (productData.rawText || '').toLowerCase();
@@ -201,22 +205,22 @@ export function detectProductCategory(productData) {
     keywords.forEach(keyword => {
       const regex = new RegExp(`\\b${keyword}\\b`, 'gi');
       
-      // Title matches get 3x weight (most important)
+      // Title matches get 10x weight (ABSOLUTE PRIORITY - Title is the source of truth!)
       const titleMatches = titleText.match(regex);
       if (titleMatches) {
-        score += titleMatches.length * 3;
+        score += titleMatches.length * 10;
       }
       
-      // Description matches get 2x weight
+      // Description matches get 3x weight
       const descMatches = descriptionText.match(regex);
       if (descMatches) {
-        score += descMatches.length * 2;
+        score += descMatches.length * 3;
       }
       
-      // Raw text matches get 1x weight (lowest priority)
+      // Raw text matches get 0.1x weight (very low - often has wrong data)
       const rawMatches = rawText.match(regex);
       if (rawMatches) {
-        score += rawMatches.length * 0.5;
+        score += rawMatches.length * 0.1;
       }
     });
     categoryScores[category] = score;
