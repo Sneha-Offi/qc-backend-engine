@@ -95,8 +95,12 @@ export async function scrapeWebsite(url) {
     // Extract specifications/attributes
     const specifications = {};
     
-    // Try table-based specs
-    $('table').each((i, table) => {
+    // Remove navigation, footer, etc. before extracting specs
+    const $productArea = $('body').clone();
+    $productArea.find('nav, header, footer, .navigation, .menu, .sidebar, .related-products, .you-may-also-like, .recommendations').remove();
+    
+    // Try table-based specs (only in product area)
+    $productArea.find('table').each((i, table) => {
       $(table).find('tr').each((j, row) => {
         const cells = $(row).find('td, th');
         if (cells.length === 2) {
@@ -138,8 +142,34 @@ export async function scrapeWebsite(url) {
       }
     });
     
-    // Extract all text for AI analysis
-    const rawText = $('body').text()
+    // Extract product-specific text (avoid navigation, footer, related products)
+    // Remove unwanted sections first
+    $('nav, header, footer, .navigation, .menu, .sidebar, .related-products, .you-may-also-like, .recommendations, script, style').remove();
+    
+    // Focus on main product content areas
+    let productContent = '';
+    const productSelectors = [
+      '.product-view', '.product-info', '.product-details', '.product-description',
+      '.product-content', 'main', '.main-content', '#product', '.item-view',
+      '[itemtype*="Product"]' // Schema.org Product markup
+    ];
+    
+    // Try to find main product container
+    for (const selector of productSelectors) {
+      const content = $(selector).text();
+      if (content && content.length > 100) {
+        productContent = content;
+        break;
+      }
+    }
+    
+    // Fallback: Use body text but cleaned
+    if (!productContent) {
+      productContent = $('body').text();
+    }
+    
+    // Clean and limit the text
+    const rawText = productContent
       .replace(/\s+/g, ' ')
       .trim()
       .substring(0, 5000); // Limit to first 5000 chars
