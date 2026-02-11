@@ -40,8 +40,72 @@ export async function searchGoogle(query, numResults = 5) {
 // ==========================================
 export async function searchVendor(vendorName, productName) {
   try {
-    const query = `site:${vendorName}.com OR site:${vendorName}.in ${productName} specifications MOQ price`;
-    return await searchGoogle(query, 5);
+    // PRIORITY 1: Search vendor's official website (most trusted)
+    console.log(`[SEARCH] Priority 1: Vendor official site (${vendorName})`);
+    const vendorQuery = `"${productName}" site:${vendorName}.com OR site:${vendorName}.co.in OR site:${vendorName}.in specifications features`;
+    const vendorResults = await searchGoogle(vendorQuery, 3);
+    
+    // PRIORITY 2: Search Amazon and major marketplaces (trusted sources)
+    console.log(`[SEARCH] Priority 2: Amazon & marketplaces`);
+    const marketplaceQuery = `"${productName}" ${vendorName} site:amazon.in OR site:amazon.com OR site:flipkart.com specifications`;
+    const marketplaceResults = await searchGoogle(marketplaceQuery, 3);
+    
+    // Combine results (vendor first, then marketplaces)
+    const allResults = [...vendorResults, ...marketplaceResults];
+    
+    // Filter results to ONLY include pages that mention the product name
+    // This prevents cross-contamination from other products
+    const filteredResults = allResults.filter(result => {
+      const titleLower = (result.title || '').toLowerCase();
+      const snippetLower = (result.snippet || '').toLowerCase();
+      const urlLower = (result.link || '').toLowerCase();
+      const productNameLower = productName.toLowerCase();
+      
+      // EXCLUDE offineeds.com (user's own site with corrupted data)
+      if (urlLower.includes('offineeds.com')) {
+        console.log(`[SEARCH FILTER] Excluded: ${result.title} (OffiNeeds site - may have corrupted data)`);
+        return false;
+      }
+      
+      // Extract first 2-3 words of product name as key identifiers
+      const productKeywords = productNameLower.split(' ').slice(0, 3);
+      
+      // Check if at least 2 keywords from product name appear in title or snippet
+      const matchCount = productKeywords.filter(keyword => 
+        titleLower.includes(keyword) || snippetLower.includes(keyword)
+      ).length;
+      
+      return matchCount >= 2; // At least 2 keywords must match
+    });
+    
+    // Sort by source priority (vendor official > Amazon > other marketplaces)
+    const sortedResults = filteredResults.sort((a, b) => {
+      const aUrl = a.link.toLowerCase();
+      const bUrl = b.link.toLowerCase();
+      const vendorDomains = [`${vendorName.toLowerCase()}.com`, `${vendorName.toLowerCase()}.co.in`, `${vendorName.toLowerCase()}.in`];
+      
+      // Vendor official site gets highest priority
+      const aIsVendor = vendorDomains.some(domain => aUrl.includes(domain));
+      const bIsVendor = vendorDomains.some(domain => bUrl.includes(domain));
+      if (aIsVendor && !bIsVendor) return -1;
+      if (!aIsVendor && bIsVendor) return 1;
+      
+      // Amazon gets second priority
+      const aIsAmazon = aUrl.includes('amazon');
+      const bIsAmazon = bUrl.includes('amazon');
+      if (aIsAmazon && !bIsAmazon) return -1;
+      if (!aIsAmazon && bIsAmazon) return 1;
+      
+      return 0;
+    });
+    
+    console.log(`[SEARCH FILTER] Found ${allResults.length} total results, kept ${sortedResults.length} relevant ones from trusted sources`);
+    sortedResults.forEach((result, idx) => {
+      const domain = new URL(result.link).hostname;
+      console.log(`  ${idx + 1}. ${domain} - ${result.title}`);
+    });
+    
+    return sortedResults;
   } catch (error) {
     console.error('Vendor Search Error:', error.message);
     throw new Error('Failed to search vendor website');
