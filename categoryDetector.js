@@ -20,7 +20,8 @@ export const PRODUCT_CATEGORIES = {
 const CATEGORY_KEYWORDS = {
   [PRODUCT_CATEGORIES.BAGS]: [
     'bag', 'backpack', 'rucksack', 'duffel', 'tote', 'sling', 'messenger', 
-    'laptop bag', 'travel bag', 'gym bag', 'school bag'
+    'laptop bag', 'travel bag', 'gym bag', 'school bag', 'handbag', 'purse',
+    'satchel', 'clutch', 'pouch', 'travel tote', 'shopping bag', 'carry bag'
   ],
   [PRODUCT_CATEGORIES.HOME_LIVING]: [
     'bottle', 'sipper', 'cup', 'mug', 'tumbler', 'flask', 'thermos', 
@@ -176,7 +177,10 @@ export const CATEGORY_ATTRIBUTES = {
 // DETECT CATEGORY FROM PRODUCT DATA
 // ==========================================
 export function detectProductCategory(productData) {
-  const searchText = `${productData.title} ${productData.description} ${productData.rawText}`.toLowerCase();
+  // Prioritize title heavily (3x weight), then description, then raw text
+  const titleText = (productData.title || '').toLowerCase();
+  const descriptionText = (productData.description || '').toLowerCase();
+  const rawText = (productData.rawText || '').toLowerCase();
   
   let categoryScores = {};
   
@@ -185,9 +189,23 @@ export function detectProductCategory(productData) {
     let score = 0;
     keywords.forEach(keyword => {
       const regex = new RegExp(`\\b${keyword}\\b`, 'gi');
-      const matches = searchText.match(regex);
-      if (matches) {
-        score += matches.length;
+      
+      // Title matches get 3x weight (most important)
+      const titleMatches = titleText.match(regex);
+      if (titleMatches) {
+        score += titleMatches.length * 3;
+      }
+      
+      // Description matches get 2x weight
+      const descMatches = descriptionText.match(regex);
+      if (descMatches) {
+        score += descMatches.length * 2;
+      }
+      
+      // Raw text matches get 1x weight (lowest priority)
+      const rawMatches = rawText.match(regex);
+      if (rawMatches) {
+        score += rawMatches.length * 0.5;
       }
     });
     categoryScores[category] = score;
