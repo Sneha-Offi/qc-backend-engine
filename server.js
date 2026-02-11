@@ -3,17 +3,16 @@ import cors from 'cors';
 import multer from 'multer';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
 import { searchGoogle, searchVendor } from './scraper.js';
 import { scrapeWebsite } from './scraper.js';
 import { parsePDF } from './pdfParser.js';
 import { parseExcel } from './excelParser.js';
 import { analyzeWithAI, detectConflicts } from './aiAnalyzer.js';
-import { 
-  detectProductCategory, 
-  extractCategoryAttributes, 
-  calculateCategoryCompleteness,
-  getCategoryDisplayName 
-} from './categoryDetector.js';
+import { extractAttributesFromImage, normalizeExtractedData } from './imageAnalyzer.js';
+
+// Load environment variables
+dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -37,12 +36,17 @@ const upload = multer({
       'application/pdf',
       'application/vnd.ms-excel',
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'text/csv'
+      'text/csv',
+      // Allow image files for screenshot mode
+      'image/png',
+      'image/jpeg',
+      'image/jpg',
+      'image/webp'
     ];
     if (allowedTypes.includes(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error('Invalid file type. Only PDF, Excel, and CSV files are allowed.'));
+      cb(new Error('Invalid file type. Only PDF, Excel, CSV, and image files are allowed.'));
     }
   }
 });
@@ -54,8 +58,15 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
-    service: 'QC Engine Backend API v2.0 - Enhanced',
-    features: ['web-scraping', 'google-search', 'pdf-parsing', 'excel-parsing', 'ai-analysis']
+    service: 'QC Engine Backend API v3.0 - Screenshot Mode',
+    features: [
+      'web-scraping', 
+      'google-search', 
+      'pdf-parsing', 
+      'excel-parsing', 
+      'ai-analysis',
+      'screenshot-ocr-vision'
+    ]
   });
 });
 
@@ -193,30 +204,75 @@ app.post('/api/analyze-conflicts', async (req, res) => {
 // ==========================================
 app.post('/api/qc-analysis', upload.array('files', 10), async (req, res) => {
   try {
-    const { productUrl, vendorName, productName } = req.body;
+    const { productUrl, vendorName, useScreenshotMode } = req.body;
     
-    if (!productUrl || !vendorName || !productName) {
+    // Screenshot mode requires vendor name, but not URL
+    const isScreenshotMode = useScreenshotMode === 'true';
+    
+    if (!vendorName) {
       return res.status(400).json({ 
-        error: 'Product URL, vendor name, and product name are required' 
+        error: 'Vendor name is required' 
+      });
+    }
+    
+    if (!isScreenshotMode && !productUrl) {
+      return res.status(400).json({ 
+        error: 'Product URL is required (or enable screenshot mode)' 
       });
     }
 
     console.log('🔍 Starting comprehensive QC analysis...');
+    console.log('📸 Screenshot mode:', isScreenshotMode);
     
-    // Step 1: Scrape product page
-    console.log('📄 Scraping product page...');
-    const scrapedData = await scrapeWebsite(productUrl);
+    let scrapedData;
+    let screenshotData = null;
+    
+    // Step 1: Get product data (from URL or screenshot)
+    if (isScreenshotMode) {
+      // SCREENSHOT MODE: Extract from uploaded image
+      console.log('📸 Screenshot mode enabled - looking for image file...');
+      
+      const imageFile = req.files?.find(f => f.mimetype.startsWith('image/'));
+      
+      if (!imageFile) {
+        return res.status(400).json({
+          error: 'Screenshot mode requires an image file upload'
+        });
+      }
+      
+      console.log(`🖼️ Processing screenshot: ${imageFile.originalname} (${imageFile.size} bytes)`);
+      
+      // Extract attributes from screenshot using Claude Vision
+      const extractedData = await extractAttributesFromImage(imageFile.buffer, imageFile.mimetype);
+      screenshotData = normalizeExtractedData(extractedData);
+      scrapedData = screenshotData;
+      
+      console.log('✅ Screenshot analysis complete:', scrapedData.title);
+      
+    } else {
+      // LINK MODE: Scrape product page
+      console.log('📄 Scraping product page...');
+      scrapedData = await scrapeWebsite(productUrl);
+      console.log('✅ Scraping complete:', scrapedData.title);
+    }
     
     // Step 2: Search for vendor information
-    console.log('🔍 Scraping vendor website for additional data...');
-    const vendorResults = await searchVendor(vendorName, productName);
+    console.log('🌐 Searching vendor information...');
+    const vendorResults = await searchVendor(vendorName, scrapedData.title);
+    console.log(`✅ Found ${vendorResults.length} vendor search results`);
     
-    // Step 3: Parse uploaded files (PDFs, Excel)
+    // Step 3: Parse uploaded files (PDFs, Excel, but NOT images)
     console.log('📂 Processing uploaded files...');
     const parsedFiles = [];
     
     if (req.files && req.files.length > 0) {
       for (const file of req.files) {
+        // Skip image files (already processed in screenshot mode)
+        if (file.mimetype.startsWith('image/')) {
+          console.log(`⏭️ Skipping image file: ${file.originalname} (already processed)`);
+          continue;
+        }
+        
         try {
           let parsedData;
           if (file.mimetype === 'application/pdf') {
@@ -231,28 +287,22 @@ app.post('/api/qc-analysis', upload.array('files', 10), async (req, res) => {
             size: file.size,
             data: parsedData
           });
+          
+          console.log(`✅ Parsed: ${file.originalname}`);
         } catch (error) {
-          console.error(`Error parsing ${file.originalname}:`, error.message);
+          console.error(`❌ Error parsing ${file.originalname}:`, error.message);
         }
       }
     }
     
-    // Step 4: Detect product category FIRST (before AI analysis)
-    console.log('🏷️  Detecting product category...');
-    const detectedCategory = detectProductCategory(scrapedData);
-    const categoryData = extractCategoryAttributes(scrapedData, detectedCategory);
-    const categoryCompleteness = calculateCategoryCompleteness(scrapedData, parsedFiles, detectedCategory);
+    console.log(`✅ Processed ${parsedFiles.length} vendor files`);
     
-    console.log(`📦 Detected Category: ${getCategoryDisplayName(detectedCategory)}`);
-    
-    // Step 5: AI conflict detection (now category-aware)
+    // Step 4: AI-powered conflict detection
     console.log('🤖 Running AI conflict detection...');
     const conflicts = await detectConflicts({
       productData: scrapedData,
       vendorFiles: parsedFiles,
-      webSearchResults: vendorResults,
-      category: detectedCategory,
-      categoryAttributes: categoryData
+      webSearchResults: vendorResults
     });
     
     console.log('✅ QC Analysis complete!');
@@ -265,13 +315,6 @@ app.post('/api/qc-analysis', upload.array('files', 10), async (req, res) => {
         uploadedFiles: parsedFiles,
         conflicts: conflicts,
         completenessScore: calculateCompletenessScore(scrapedData, parsedFiles),
-        category: {
-          detected: detectedCategory,
-          displayName: getCategoryDisplayName(detectedCategory),
-          attributes: categoryData.categoryAttributes,
-          requiredAttributes: categoryData.requiredAttributes,
-          completeness: categoryCompleteness
-        },
         timestamp: new Date().toISOString()
       }
     });
@@ -322,16 +365,17 @@ app.use((err, req, res, next) => {
 // ==========================================
 app.listen(PORT, () => {
   console.log('='.repeat(50));
-  console.log('🚀 QC Engine Backend API v2.0 - Enhanced');
+  console.log('🚀 QC Engine Backend API v3.0 - Screenshot Mode');
   console.log('='.repeat(50));
   console.log(`📡 Server running on port ${PORT}`);
   console.log(`🌍 Health check: http://localhost:${PORT}/health`);
   console.log('');
   console.log('✅ Features enabled:');
-  console.log('   • Web Scraping (Cheerio)');
+  console.log('   • Web Scraping (Cheerio + Anti-Bot)');
   console.log('   • Google Custom Search');
   console.log('   • PDF Parsing');
   console.log('   • Excel/CSV Processing');
   console.log('   • AI Conflict Detection (Claude)');
+  console.log('   • 📸 Screenshot OCR (Claude Vision API)');
   console.log('='.repeat(50));
 });
