@@ -193,11 +193,11 @@ app.post('/api/analyze-conflicts', async (req, res) => {
 // ==========================================
 app.post('/api/qc-analysis', upload.array('files', 10), async (req, res) => {
   try {
-    const { productUrl, vendorName } = req.body;
+    const { productUrl, vendorName, productName } = req.body;
     
-    if (!productUrl || !vendorName) {
+    if (!productUrl || !vendorName || !productName) {
       return res.status(400).json({ 
-        error: 'Product URL and vendor name are required' 
+        error: 'Product URL, vendor name, and product name are required' 
       });
     }
 
@@ -208,8 +208,8 @@ app.post('/api/qc-analysis', upload.array('files', 10), async (req, res) => {
     const scrapedData = await scrapeWebsite(productUrl);
     
     // Step 2: Search for vendor information
-    console.log('🌐 Searching vendor information...');
-    const vendorResults = await searchVendor(vendorName, scrapedData.title);
+    console.log('🔍 Scraping vendor website for additional data...');
+    const vendorResults = await searchVendor(vendorName, productName);
     
     // Step 3: Parse uploaded files (PDFs, Excel)
     console.log('📂 Processing uploaded files...');
@@ -237,19 +237,23 @@ app.post('/api/qc-analysis', upload.array('files', 10), async (req, res) => {
       }
     }
     
-    // Step 4: AI-powered conflict detection
-    console.log('🤖 Running AI conflict detection...');
-    const conflicts = await detectConflicts({
-      productData: scrapedData,
-      vendorFiles: parsedFiles,
-      webSearchResults: vendorResults
-    });
-    
-    // Step 5: Detect product category and extract category-specific attributes
+    // Step 4: Detect product category FIRST (before AI analysis)
     console.log('🏷️  Detecting product category...');
     const detectedCategory = detectProductCategory(scrapedData);
     const categoryData = extractCategoryAttributes(scrapedData, detectedCategory);
     const categoryCompleteness = calculateCategoryCompleteness(scrapedData, parsedFiles, detectedCategory);
+    
+    console.log(`📦 Detected Category: ${getCategoryDisplayName(detectedCategory)}`);
+    
+    // Step 5: AI conflict detection (now category-aware)
+    console.log('🤖 Running AI conflict detection...');
+    const conflicts = await detectConflicts({
+      productData: scrapedData,
+      vendorFiles: parsedFiles,
+      webSearchResults: vendorResults,
+      category: detectedCategory,
+      categoryAttributes: categoryData
+    });
     
     console.log('✅ QC Analysis complete!');
     
