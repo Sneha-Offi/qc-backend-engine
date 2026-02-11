@@ -26,7 +26,12 @@ const CATEGORY_KEYWORDS = {
   [PRODUCT_CATEGORIES.HOME_LIVING]: [
     'bottle', 'sipper', 'cup', 'mug', 'tumbler', 'flask', 'thermos', 
     'water bottle', 'coffee mug', 'tea cup', 'drinkware', 'home decor',
-    'cushion', 'pillow', 'blanket', 'photo frame', 'fun game', 'board game'
+    'cushion', 'pillow', 'blanket', 'photo frame', 'fun game', 'board game',
+    // Kitchen utensils & tools
+    'peeler', 'grater', 'slicer', 'opener', 'bottle opener', 'can opener',
+    'spatula', 'ladle', 'whisk', 'tongs', 'masher', 'strainer', 'colander',
+    'chopper', 'cutter', 'knife', 'kitchen tool', 'kitchen utensil',
+    'cookware', 'bakeware', 'cutting board', 'rolling pin'
   ],
   [PRODUCT_CATEGORIES.OFFICE_ACCESSORIES]: [
     'notebook', 'diary', 'journal', 'pen', 'pencil', 'folder', 'organizer',
@@ -78,14 +83,20 @@ export const CATEGORY_ATTRIBUTES = {
     critical: ['capacity', 'material', 'moq', 'price'],
     recommended: [
       'insulation', 'temperature_retention', 'leak_proof', 'dishwasher_safe',
-      'dimensions', 'branding_methods', 'color_options', 'lead_time'
+      'dimensions', 'branding_methods', 'color_options', 'lead_time',
+      // Kitchen tool specific
+      'blade_material', 'handle_material', 'features', 'warranty'
     ],
     extractors: {
-      capacity: /(?:capacity|volume)[:|\s]+(\d+)\s*(ml|milliliter|litre|liter|oz)/gi,
-      insulation: /(?:double|single)\s*wall|insulated|vacuum/gi,
-      temperature_retention: /(?:keeps\s*(?:hot|cold)|retains\s*temperature).*?(\d+)\s*(?:hour|hr)/gi,
-      leak_proof: /leak\s*(?:proof|resistant)/gi,
-      dishwasher_safe: /dishwasher\s*safe/gi
+      capacity: /(?:capacity|volume)[:|\\s]+(\\d+)\\s*(ml|milliliter|litre|liter|oz)/gi,
+      insulation: /(?:double|single)\\s*wall|insulated|vacuum/gi,
+      temperature_retention: /(?:keeps\\s*(?:hot|cold)|retains\\s*temperature).*?(\\d+)\\s*(?:hour|hr)/gi,
+      leak_proof: /leak\\s*(?:proof|resistant)/gi,
+      dishwasher_safe: /dishwasher\\s*safe/gi,
+      // Kitchen tool extractors
+      blade_material: /(?:blade|edge)[:|\\s]*(stainless\\s*steel|ceramic|carbon\\s*steel)/gi,
+      handle_material: /(?:handle|grip)[:|\\s]*(plastic|rubber|wood|steel|silicone)/gi,
+      features: /(?:ergonomic|comfortable|non\\s*slip|rust\\s*proof|durable)/gi
     }
   },
   
