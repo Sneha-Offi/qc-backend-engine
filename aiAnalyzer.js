@@ -60,17 +60,22 @@ function buildAnalysisPrompt(productData, vendorFiles, webSearchResults, categor
 
 **IMPORTANT: This product has been automatically classified as category: ${categoryName}**
 
-**ONLY extract and validate attributes relevant to ${categoryName} products. IGNORE attributes from other categories.**
+**CRITICAL RULES:**
+1. ONLY extract and validate attributes relevant to ${categoryName} products
+2. IGNORE attributes from other categories (e.g., if this is "Home & Living", ignore "pages", "ruling", "binding" which are for notebooks)
+3. DO NOT extract attributes from web search results - use them ONLY for validation and cross-checking
+4. Primary source of truth: Product URL and product title
+5. If specifications contradict the title, FLAG it as suspicious data
 
 Analyze the following product data sources and identify ANY conflicts, inconsistencies, missing information, or red flags:
 
-# PRODUCT PAGE DATA:
+# PRODUCT PAGE DATA (PRIMARY SOURCE):
 Title: ${productData.title}
 Price: ${productData.price}
 Description: ${productData.description}
 URL: ${productData.url}
 
-# DETECTED CATEGORY-SPECIFIC ATTRIBUTES:
+# DETECTED CATEGORY-SPECIFIC ATTRIBUTES (Use these ONLY):
 Category: ${categoryName}
 Extracted Attributes: ${JSON.stringify(detectedAttrs, null, 2)}
 Required Critical Attributes: ${JSON.stringify(requiredAttrs.critical || [], null, 2)}
@@ -79,27 +84,30 @@ Required Recommended Attributes: ${JSON.stringify(requiredAttrs.recommended || [
 # RAW SPECIFICATIONS (For reference only - filter by category):
 ${JSON.stringify(productData.specifications, null, 2)}
 
-# VENDOR FILES DATA:
+**IMPORTANT:** If specifications contain attributes from OTHER categories (e.g., notebook attributes for a kitchen utensil), FLAG this as data corruption and IGNORE those attributes!
+
+# VENDOR FILES DATA (For validation):
 ${vendorFiles.map((file, idx) => `
 File ${idx + 1}: ${file.filename}
 ${JSON.stringify(file.data.extractedData || file.data, null, 2)}
 `).join('\n')}
 
-# WEB SEARCH RESULTS:
+# WEB SEARCH RESULTS (For validation ONLY - DO NOT extract attributes from here):
 ${webSearchResults.map((result, idx) => `
 Result ${idx + 1}: ${result.title}
 ${result.snippet}
 Link: ${result.link}
 `).join('\n')}
 
+**NOTE:** Web search results are for VALIDATION only. Do NOT extract new attributes from them. Only use them to verify existing attributes.
+
 # YOUR TASK:
 Analyze and provide a comprehensive QC report focusing ONLY on ${categoryName}-specific attributes:
 
 1. **CRITICAL CONFLICTS**: Price mismatches, MOQ inconsistencies, ${categoryName}-specific attribute conflicts
-2. **MISSING DATA**: Required attributes for ${categoryName} products (${requiredAttrs.critical?.join(', ') || 'MOQ, price, specifications'})
-3. **BRAND VALIDATION**: Verify brand name authenticity across all sources
-4. **DATA COMPLETENESS**: Score each data source (0-100%)
-5. **RED FLAGS**: Suspicious patterns, inconsistent information, missing critical details
+2. **DATA CORRUPTION**: Flag if product page contains attributes from wrong category (e.g., notebook specs on a peeler page)
+3. **MISSING DATA**: Required attributes for ${categoryName} products (${requiredAttrs.critical?.join(', ') || 'MOQ, price, specifications'})
+4. **BRAND VALIDATION**: Verify brand name authenticity across all sources
 
 **IMPORTANT FILTERING RULES:**
 - For ${categoryName} products, ONLY validate these attribute types: ${requiredAttrs.critical?.join(', ') || 'category-specific attributes'}
