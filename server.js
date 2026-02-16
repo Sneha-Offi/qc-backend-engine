@@ -262,6 +262,55 @@ app.post('/api/qc-analysis', upload.array('files', 10), async (req, res) => {
       console.log('📄 Scraping product page...');
       scrapedData = await scrapeWebsite(productUrl);
       console.log('✅ Scraping complete:', scrapedData.title);
+      
+      // **NEW: Extract product info from URL and search Google for additional sources**
+      console.log('🔍 Searching Google for additional product sources...');
+      const productQuery = `${scrapedData.title} ${vendorName} specifications price MOQ`;
+      
+      try {
+        const googleResults = await searchGoogle(productQuery, 3);
+        console.log(`✅ Found ${googleResults.length} additional sources from Google`);
+        
+        // Scrape additional sources (limit to 2 to avoid timeouts)
+        const additionalData = [];
+        for (let i = 0; i < Math.min(2, googleResults.length); i++) {
+          try {
+            console.log(`🌐 Scraping additional source: ${googleResults[i].link}`);
+            const extraData = await scrapeWebsite(googleResults[i].link);
+            additionalData.push({
+              source: googleResults[i].displayLink,
+              url: googleResults[i].link,
+              data: extraData
+            });
+            console.log(`✅ Scraped: ${extraData.title}`);
+          } catch (err) {
+            console.warn(`⚠️ Failed to scrape ${googleResults[i].link}:`, err.message);
+          }
+        }
+        
+        // Merge specifications from additional sources
+        if (additionalData.length > 0) {
+          console.log(`📊 Merging data from ${additionalData.length} additional sources...`);
+          additionalData.forEach(extra => {
+            // Merge specifications
+            Object.entries(extra.data.specifications || {}).forEach(([key, value]) => {
+              if (!scrapedData.specifications[key] && value !== 'Not found') {
+                scrapedData.specifications[key] = value;
+              }
+            });
+          });
+          
+          // Store additional sources in metadata
+          scrapedData.additionalSources = additionalData.map(s => ({
+            source: s.source,
+            url: s.url,
+            specsFound: Object.keys(s.data.specifications || {}).length
+          }));
+        }
+      } catch (error) {
+        console.warn('⚠️ Google search for additional sources failed:', error.message);
+        // Continue with just the main scraped data
+      }
     }
     
     // Step 2: Search for vendor information
