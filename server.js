@@ -1,21 +1,11 @@
 import express from 'express';
-import cors from 'cors';
 import multer from 'multer';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import dotenv from 'dotenv';
-import { searchGoogle, searchVendor } from './scraper.js';
-import { scrapeWebsite } from './scraper.js';
-import { parsePDF } from './pdfParser.js';
-import { parseExcel } from './excelParser.js';
-import { analyzeWithAI, detectConflicts } from './aiAnalyzer.js';
-import { extractAttributesFromImage, normalizeExtractedData } from './imageAnalyzer.js';
-
-// Load environment variables
-dotenv.config();
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import cors from 'cors';
+import { scrapeWebsite, searchGoogle, searchVendor } from './scraper.js';
+import { extractAttributesFromFiles } from './fileParser.js';
+import { extractAttributesFromImage } from './imageAnalyzer.js';
+import { analyzeProduct } from './aiAnalyzer.js';
+import { detectCategory, validateCategoryAttributes } from './categoryTaxonomy.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -258,59 +248,208 @@ app.post('/api/qc-analysis', upload.array('files', 10), async (req, res) => {
       console.log('✅ Screenshot analysis complete:', scrapedData.title);
       
     } else {
-      // LINK MODE: Scrape product page
-      console.log('📄 Scraping product page...');
-      scrapedData = await scrapeWebsite(productUrl);
-      console.log('✅ Scraping complete:', scrapedData.title);
+      // LINK MODE: **NEW APPROACH - Don't scrape the provided URL**
+      // Instead: Extract brand/product name and search Google + Amazon
+      console.log('🔗 Link mode: Extracting product info from URL...');
       
-      // **NEW: Extract product info from URL and search Google for additional sources**
-      console.log('🔍 Searching Google for additional product sources...');
-      const productQuery = `${scrapedData.title} ${vendorName} specifications price MOQ`;
+      // Extract product name from URL
+      const urlParts = productUrl.split('/');
+      const lastPart = urlParts[urlParts.length - 1] || urlParts[urlParts.length - 2];
+      const productNameFromUrl = lastPart
+        .replace(/[-_]/g, ' ')
+        .replace(/\.(html|php|aspx?)$/i, '')
+        .replace(/\?.*$/, '') // Remove query params
+        .trim();
+      
+      console.log(`📦 Extracted product name: "${productNameFromUrl}"`);
+      console.log(`🏷️ Brand/Vendor: "${vendorName}"`);
+      
+      // Initialize base product data from URL
+      scrapedData = {
+        url: productUrl,
+        title: productNameFromUrl || vendorName + ' Product',
+        description: `Product: ${productNameFromUrl}. Data aggregated from Google and Amazon search results.`,
+        price: 'Not available',
+        specifications: {
+          'Brand': vendorName,
+          'Product Name': productNameFromUrl,
+          'Source URL': productUrl
+        },
+        images: [],
+        metaTags: {},
+        rawText: '',
+        scrapedAt: new Date().toISOString(),
+        searchBasedData: true // Flag to indicate this came from search, not direct scraping
+      };
+      
+      // **STEP 1: Search Google for product specifications**
+      console.log('🔍 Step 1: Searching Google for product specifications...');
+      const googleQuery = `${productNameFromUrl} ${vendorName} specifications features price capacity material`;
       
       try {
-        const googleResults = await searchGoogle(productQuery, 3);
-        console.log(`✅ Found ${googleResults.length} additional sources from Google`);
+        const googleResults = await searchGoogle(googleQuery, 5);
+        console.log(`✅ Found ${googleResults.length} Google results`);
         
-        // Scrape additional sources (limit to 2 to avoid timeouts)
-        const additionalData = [];
-        for (let i = 0; i < Math.min(2, googleResults.length); i++) {
-          try {
-            console.log(`🌐 Scraping additional source: ${googleResults[i].link}`);
-            const extraData = await scrapeWebsite(googleResults[i].link);
-            additionalData.push({
-              source: googleResults[i].displayLink,
-              url: googleResults[i].link,
-              data: extraData
+        // **Extract metadata from search results (titles & snippets) - NO SCRAPING NEEDED**
+        if (googleResults.length > 0) {
+          console.log('📋 Extracting data from Google search snippets (no scraping)...');
+          
+          // Use the search result snippets and titles directly
+          googleResults.forEach((result, idx) => {
+            // Extract any specifications from the snippet text
+            const snippet = result.snippet || '';
+            const title = result.title || '';
+            
+            // Pattern matching for common specifications
+            const patterns = {
+              'Capacity': /(\d+)\s*(ml|ML|litre|liter|L|oz)/i,
+              'Material': /(stainless steel|plastic|glass|copper|steel|silicone|ceramic)/i,
+              'Price': /₹\s*([\d,]+)|Rs\.?\s*([\d,]+)|INR\s*([\d,]+)/i,
+              'Weight': /(\d+)\s*(g|kg|grams|gm)/i,
+              'Hot Retention': /(\d+)\s*(hours?|hrs?)\s*(hot|warm)/i,
+              'Cold Retention': /(\d+)\s*(hours?|hrs?)\s*(cold|cool)/i,
+            };
+            
+            const combined = `${title} ${snippet}`;
+            
+            Object.entries(patterns).forEach(([key, pattern]) => {
+              const match = combined.match(pattern);
+              if (match && !scrapedData.specifications[key]) {
+                scrapedData.specifications[key] = match[0];
+              }
             });
-            console.log(`✅ Scraped: ${extraData.title}`);
-          } catch (err) {
-            console.warn(`⚠️ Failed to scrape ${googleResults[i].link}:`, err.message);
-          }
+            
+            // Check for boolean attributes
+            if (/BPA.{0,5}free/i.test(combined)) {
+              scrapedData.specifications['BPA Free'] = 'Yes';
+            }
+            if (/leak.{0,5}proof/i.test(combined)) {
+              scrapedData.specifications['Leak Proof'] = 'Yes';
+            }
+            if (/dishwasher.{0,5}safe/i.test(combined)) {
+              scrapedData.specifications['Dishwasher Safe'] = 'Yes';
+            }
+          });
+          
+          // Store search result metadata
+          scrapedData.googleSearchResults = googleResults.slice(0, 5).map(r => ({
+            title: r.title,
+            snippet: r.snippet,
+            source: r.displayLink,
+            url: r.link
+          }));
+          
+          console.log(`✅ Extracted specifications from ${googleResults.length} search snippets (no scraping required)`);
         }
         
-        // Merge specifications from additional sources
-        if (additionalData.length > 0) {
-          console.log(`📊 Merging data from ${additionalData.length} additional sources...`);
-          additionalData.forEach(extra => {
-            // Merge specifications
-            Object.entries(extra.data.specifications || {}).forEach(([key, value]) => {
-              if (!scrapedData.specifications[key] && value !== 'Not found') {
-                scrapedData.specifications[key] = value;
+        // **OPTIONAL: Try scraping ONLY if we got very few specs from snippets**
+        const specsCount = Object.keys(scrapedData.specifications).length;
+        if (specsCount < 5 && googleResults.length > 0) {
+          console.log(`⚠️ Only ${specsCount} specs found from snippets. Attempting careful scraping...`);
+          
+          // Try scraping top result only, with timeout
+          const googleData = [];
+          for (let i = 0; i < Math.min(2, googleResults.length); i++) {
+            try {
+              console.log(`🌐 Attempting scrape ${i+1}: ${googleResults[i].displayLink}`);
+              
+              // Add timeout wrapper
+              const scrapeWithTimeout = Promise.race([
+                scrapeWebsite(googleResults[i].link),
+                new Promise((_, reject) => 
+                  setTimeout(() => reject(new Error('Scrape timeout')), 8000)
+                )
+              ]);
+              
+              const extraData = await scrapeWithTimeout;
+              googleData.push({
+                source: googleResults[i].displayLink,
+                url: googleResults[i].link,
+                data: extraData
+              });
+              console.log(`✅ Scraped successfully: ${extraData.title}`);
+              
+              // Merge the scraped data
+              Object.entries(extraData.specifications || {}).forEach(([key, value]) => {
+                if (!scrapedData.specifications[key] && value && value !== 'Not found') {
+                  scrapedData.specifications[key] = value;
+                }
+              });
+              
+              // Stop if we got good data
+              if (Object.keys(scrapedData.specifications).length >= 8) {
+                console.log('✅ Sufficient specifications collected, stopping scraping.');
+                break;
+              }
+            } catch (err) {
+              console.warn(`⚠️ Scrape ${i+1} failed (expected): ${err.message}`);
+              // Continue to next result
+            }
+          }
+          
+          if (googleData.length > 0) {
+            scrapedData.googleScrapedSources = googleData.map(s => ({
+              source: s.source,
+              url: s.url,
+              specsFound: Object.keys(s.data.specifications || {}).length
+            }));
+          }
+        } else {
+          console.log(`✅ Got ${specsCount} specs from snippets - skipping risky scraping`);
+        }
+      } catch (error) {
+        console.warn('⚠️ Google search failed (continuing with base data):', error.message);
+        // Continue with base product data - this is not a critical error
+      }
+      
+      // **STEP 2: Search Amazon snippets (NO SCRAPING)**
+      console.log('🔍 Step 2: Searching Amazon for additional data...');
+      const amazonQuery = `${productNameFromUrl} ${vendorName} site:amazon.in OR site:amazon.com`;
+      
+      try {
+        const amazonResults = await searchGoogle(amazonQuery, 3);
+        console.log(`✅ Found ${amazonResults.length} Amazon search results`);
+        
+        // Extract from Amazon search snippets (NO SCRAPING)
+        if (amazonResults.length > 0) {
+          console.log('📋 Extracting data from Amazon search snippets...');
+          
+          amazonResults.forEach(result => {
+            const snippet = result.snippet || '';
+            const title = result.title || '';
+            const combined = `${title} ${snippet}`;
+            
+            // Extract specifications from Amazon snippets
+            const patterns = {
+              'Capacity': /(\d+)\s*(ml|ML|litre|liter|L|oz)/i,
+              'Material': /(stainless steel|plastic|glass|copper|steel|silicone|ceramic)/i,
+              'Price': /₹\s*([\d,]+)|Rs\.?\s*([\d,]+)|INR\s*([\d,]+)/i,
+              'Weight': /(\d+)\s*(g|kg|grams|gm)/i,
+            };
+            
+            Object.entries(patterns).forEach(([key, pattern]) => {
+              const match = combined.match(pattern);
+              if (match && !scrapedData.specifications[key]) {
+                scrapedData.specifications[key] = match[0];
               }
             });
           });
           
-          // Store additional sources in metadata
-          scrapedData.additionalSources = additionalData.map(s => ({
-            source: s.source,
-            url: s.url,
-            specsFound: Object.keys(s.data.specifications || {}).length
+          // Store Amazon search results
+          scrapedData.amazonSearchResults = amazonResults.map(r => ({
+            title: r.title,
+            snippet: r.snippet,
+            source: r.displayLink,
+            url: r.link
           }));
+          
+          console.log(`✅ Extracted data from ${amazonResults.length} Amazon snippets (no scraping)`);
         }
       } catch (error) {
-        console.warn('⚠️ Google search for additional sources failed:', error.message);
-        // Continue with just the main scraped data
+        console.warn('⚠️ Amazon search failed (not critical):', error.message);
       }
+      
+      console.log(`✅ Product data aggregation complete! Found ${Object.keys(scrapedData.specifications).length} specifications`);
     }
     
     // Step 2: Search for vendor information
@@ -362,6 +501,33 @@ app.post('/api/qc-analysis', upload.array('files', 10), async (req, res) => {
     
     console.log(`✅ Processed ${parsedFiles.length} vendor files`);
     
+    // **NEW: Detect product category and validate attributes**
+    console.log('🏷️ Detecting product category...');
+    const detectedCategory = detectCategory(
+      scrapedData.title,
+      scrapedData.description,
+      scrapedData.url || ''
+    );
+    
+    let categoryValidation = null;
+    if (detectedCategory) {
+      console.log(`✅ Category detected: ${detectedCategory.name}`);
+      
+      // Validate extracted attributes against category requirements
+      categoryValidation = validateCategoryAttributes(
+        scrapedData.specifications,
+        detectedCategory
+      );
+      
+      console.log(`📊 Category completeness: ${categoryValidation.completeness}% (${categoryValidation.extracted}/${categoryValidation.totalRequired} attributes)`);
+      
+      if (categoryValidation.missingAttributes.length > 0) {
+        console.log(`⚠️ Missing required attributes:`, categoryValidation.missingAttributes);
+      }
+    } else {
+      console.log('⚠️ No specific category detected');
+    }
+    
     // Step 4: AI-powered conflict detection
     console.log('🤖 Running AI conflict detection...');
     const conflicts = await detectConflicts({
@@ -380,13 +546,56 @@ app.post('/api/qc-analysis', upload.array('files', 10), async (req, res) => {
         uploadedFiles: parsedFiles,
         conflicts: conflicts,
         completenessScore: calculateCompletenessScore(scrapedData, parsedFiles),
+        category: detectedCategory ? {
+          key: detectedCategory.key,
+          name: detectedCategory.name,
+          requiredAttributes: detectedCategory.requiredAttributes,
+          validation: categoryValidation
+        } : null,
         timestamp: new Date().toISOString()
       }
     });
     
   } catch (error) {
-    console.error('QC Analysis error:', error);
-    res.status(500).json({ error: error.message });
+    console.error('❌ QC Analysis error:', error);
+    console.error('❌ Error stack:', error.stack);
+    
+    // **ENHANCED: Return fallback data even on critical errors**
+    console.log('🔄 Creating fallback response for critical error...');
+    
+    try {
+      const fallbackData = {
+        url: req.body.productUrl || 'Unknown',
+        title: 'Product from ' + (req.body.vendorName || 'Unknown Vendor'),
+        description: 'Unable to complete analysis due to technical error. ' + error.message,
+        price: 'Not available',
+        specifications: {
+          'Error': error.message,
+          'Note': 'Analysis incomplete. Please try again or contact support.'
+        },
+        images: [],
+        metaTags: {},
+        rawText: '',
+        scrapedAt: new Date().toISOString(),
+        errorFallback: true
+      };
+      
+      res.json({
+        success: true,
+        warning: 'Analysis completed with errors',
+        analysis: {
+          productPage: fallbackData,
+          vendorSearchResults: [],
+          uploadedFiles: [],
+          conflicts: [],
+          completenessScore: { score: 20, percentage: 20, rating: 'Poor' },
+          timestamp: new Date().toISOString()
+        }
+      });
+    } catch (fallbackError) {
+      // Last resort - return actual error
+      res.status(500).json({ error: error.message });
+    }
   }
 });
 
