@@ -1,5 +1,6 @@
 import axios from 'axios';
 import * as cheerio from 'cheerio';
+import { detectCategory, extractCategoryAttributes, validateCategoryAttributes } from './categoryTaxonomy.js';
 
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY || 'AIzaSyD0AhnzXhoZGX8_5iVLIDD0BS10ll5Jla0';
 const GOOGLE_CX = process.env.GOOGLE_CX || '607c25e7c7c3d4629';
@@ -120,7 +121,15 @@ export async function scrapeWebsite(url) {
             // **Clean and normalize the attribute name**
             const cleanedKey = cleanAttributeName(key);
             if (cleanedKey && value && value.length > 0 && value.length < 500) {
-              specifications[cleanedKey] = value;
+              // **DEDUPLICATION: Only add if not already present**
+              if (!specifications[cleanedKey]) {
+                specifications[cleanedKey] = value;
+              } else {
+                // If already exists, prefer the longer/more detailed value
+                if (value.length > specifications[cleanedKey].length) {
+                  specifications[cleanedKey] = value;
+                }
+              }
             }
           }
         }
@@ -134,7 +143,10 @@ export async function scrapeWebsite(url) {
       if (parts.length === 2) {
         const cleanedKey = cleanAttributeName(parts[0].trim());
         if (cleanedKey && parts[1].trim()) {
-          specifications[cleanedKey] = parts[1].trim();
+          // **DEDUPLICATION: Only add if not already present**
+          if (!specifications[cleanedKey]) {
+            specifications[cleanedKey] = parts[1].trim();
+          }
         }
       }
     });
@@ -177,6 +189,21 @@ export async function scrapeWebsite(url) {
     });
     
     console.log(`✅ Extracted ${Object.keys(specifications).length} specifications`);
+    
+    // **NEW: Detect category and extract category-specific attributes**
+    const category = detectCategory(title, specifications);
+    if (category) {
+      console.log(`🔍 Detected category: ${category}`);
+      const categoryAttributes = extractCategoryAttributes(category, specifications);
+      if (categoryAttributes) {
+        console.log(`🔍 Extracted category-specific attributes: ${Object.keys(categoryAttributes).length}`);
+        Object.entries(categoryAttributes).forEach(([key, value]) => {
+          if (value && !specifications[key]) {
+            specifications[key] = value;
+          }
+        });
+      }
+    }
     
     return {
       url,
@@ -419,60 +446,80 @@ function cleanAttributeName(key) {
     return null;
   }
   
-  // Step 2: Remove special characters but keep spaces and common punctuation
+  // Step 2: Remove everything before colons or equals (often has junk prefixes)
+  // Example: "ford 0 Lat = Oo @ 31,255 Capacity in Ltrs" → "Capacity in Ltrs"
+  if (key.includes(':')) {
+    const parts = key.split(':');
+    key = parts[parts.length - 1].trim(); // Take last part after colon
+  }
+  if (key.includes('=')) {
+    const parts = key.split('=');
+    key = parts[parts.length - 1].trim(); // Take last part after equals
+  }
+  
+  // Step 3: Remove special characters but keep spaces and common punctuation
   let cleanedKey = key
     .replace(/[^\w\s\-()%/]/g, ' ') // Keep word chars, spaces, hyphens, parentheses, %, /
     .replace(/\s+/g, ' ') // Normalize multiple spaces to single space
     .trim();
   
-  // Step 3: Remove leading/trailing junk characters
+  // Step 4: Remove leading numbers, symbols, and junk prefixes
+  // Example: "3 SKU" → "SKU", "2 Color" → "Color", "& Brand" → "Brand"
   cleanedKey = cleanedKey
-    .replace(/^[\W_]+/, '') // Remove leading non-word chars
-    .replace(/[\W_]+$/, ''); // Remove trailing non-word chars
+    .replace(/^[\d\W_]+/, '') // Remove ALL leading non-word characters and numbers
+    .replace(/[\W_]+$/, '') // Remove trailing non-word chars
+    .trim();
   
-  // Step 4: Check minimum length (attribute names should be at least 2 chars)
-  if (cleanedKey.length < 2) {
+  // Step 5: Check minimum length (attribute names should be at least 3 chars)
+  if (cleanedKey.length < 3) {
     return null;
   }
   
-  // Step 5: Filter out common junk patterns
+  // Step 6: Filter out specific junk patterns (more aggressive)
   const junkPatterns = [
     /^[\d\s]+$/, // Only numbers and spaces
     /^[a-z]{1,2}$/i, // Single or two letters only
     /^\d+\.\d+$/, // Just decimal numbers
-    /^(of|to|the|and|or|in|at|by|for|on)$/i, // Common words
-    /ford\s*0/i, // Specific junk pattern from screenshot
-    /^cc\s*[il]\s*\d/i, // Garbled patterns like "Cc I 3ll"
-    /^[fy]\s*[ory]+$/i, // Patterns like "FY ory"
-    /^po\s*rls/i, // "Po RLS)" pattern
-    /^j\s*\)/i, // "J. ) of" pattern
-    /^lb\s*pan$/i, // "Lb Pan" (unless legitimate)
-    /^eco$/i, // Single word that needs context
-    /^\d+\s*lat$/i, // "0 Lat" pattern
-    /^e\s*el\s*oo/i, // "E EL oo ABEL" pattern
-    /^pgh\s*e/i, // "Pgh E So" pattern
-    /^ya\s*i\s*ers/i, // "ya I ERs St.Y" pattern
+    /^(of|to|the|and|or|in|at|by|for|on|is|it|be|are)$/i, // Common filler words
+    /ford\s*0/i, // Specific junk pattern
+    /^cc\s*[il]\s*\d/i, // "Cc I 3ll"
+    /^[fy]\s*[ory]+$/i, // "FY ory"
+    /^po\s*rls/i, // "Po RLS)"
+    /^j\s*\)/i, // "J. ) of"
+    /^lb\s*pan$/i, // "Lb Pan"
+    /^eco$/i, // "Eco" alone
+    /^\d+\s*lat$/i, // "0 Lat"
+    /^e\s*el\s*oo/i, // "E EL oo ABEL"
+    /^pgh\s*e/i, // "Pgh E So"
+    /^ya\s*i\s*ers/i, // "ya I ERs St.Y"
+    /^sie\s*eco$/i, // "SIE Eco"
+    /^ke\s*aid\s*j$/i, // "KE aid J"
+    /^\d+\s*color$/i, // "2 Color"
+    /^\d+\s*sku$/i, // "3 SKU"
+    /^a\s*\d+/i, // "A 3995" patterns
+    /^brandingmethods$/i, // "brandingMethods" (likely a code variable)
+    /^packaging$/i, // Generic "packaging" without context
   ];
   
   for (const pattern of junkPatterns) {
     if (pattern.test(cleanedKey)) {
-      console.log(`⚠️ Filtered junk attribute: "${key}" → "${cleanedKey}"`);
       return null;
     }
   }
   
-  // Step 6: Map common B2B attribute patterns to standard names
+  // Step 7: Map common B2B attribute patterns to standard names
   const attributeMapping = {
     // Capacity/Volume
     'capacity in ltrs': 'Capacity (Litres)',
     'capacity in ml': 'Capacity (ml)',
+    'ca ity in ml': 'Capacity (ml)', // OCR errors
     'capacity': 'Capacity',
     'volume': 'Capacity',
     'size': 'Size',
     
     // Material
     'material': 'Material',
-    'material type': 'Material',
+    'material type': 'Material Type',
     'body material': 'Body Material',
     'outer material': 'Outer Material',
     'inner material': 'Inner Material',
@@ -495,18 +542,18 @@ function cleanAttributeName(key) {
     'unit price': 'Unit Price',
     
     // Customization
-    'customization': 'Customization',
+    'customization': 'Customization Type',
     'customization type': 'Customization Type',
     'printing method': 'Printing Method',
     'branding method': 'Branding Method',
-    'branding methods': 'Branding Methods',
+    'branding methods': 'Branding Method',
     'logo printing': 'Logo Printing',
     
     // Dimensions & Weight
     'dimensions': 'Dimensions',
     'dimension': 'Dimensions',
     'weight': 'Weight',
-    'product weight': 'Product Weight',
+    'product weight': 'Weight',
     'height': 'Height',
     'width': 'Width',
     'diameter': 'Diameter',
@@ -529,9 +576,10 @@ function cleanAttributeName(key) {
     
     // Categories
     'category': 'Category',
-    'product category': 'Product Category',
+    'product category': 'Category',
     'product type': 'Product Type',
     'type': 'Product Type',
+    'bottle type': 'Bottle Type',
     
     // Stock & Delivery
     'availability': 'Availability',
@@ -540,16 +588,11 @@ function cleanAttributeName(key) {
     'delivery time': 'Delivery Time',
     'lead time': 'Lead Time',
     'dispatch time': 'Dispatch Time',
-    
-    // Packaging
-    'packaging': 'Packaging',
-    'package contents': 'Package Contents',
-    'box contents': 'Box Contents',
-    'packing': 'Packing',
+    'delivery': 'Delivery',
     
     // Warranty & Certification
     'warranty': 'Warranty',
-    'warranty period': 'Warranty Period',
+    'warranty period': 'Warranty',
     'certification': 'Certifications',
     'certifications': 'Certifications',
     
@@ -564,6 +607,10 @@ function cleanAttributeName(key) {
     'manufacturer': 'Manufacturer',
     'usage': 'Usage/Application',
     'application': 'Usage/Application',
+    'cap type': 'Cap Type',
+    'cap': 'Cap Type',
+    'friendly packaging': 'Eco-Friendly Packaging',
+    'eco friendly': 'Eco-Friendly',
   };
   
   // Normalize to lowercase for comparison
@@ -574,13 +621,12 @@ function cleanAttributeName(key) {
     return attributeMapping[lowerKey];
   }
   
-  // Step 7: If no mapping, try to intelligently clean
-  // Convert to Title Case
+  // Step 8: If no mapping, convert to Title Case
   cleanedKey = cleanedKey
     .split(' ')
     .map(word => {
-      // Keep abbreviations uppercase
-      if (word.toUpperCase() === word && word.length <= 4) {
+      // Keep abbreviations uppercase (2-4 chars, all caps)
+      if (word.toUpperCase() === word && word.length >= 2 && word.length <= 4) {
         return word.toUpperCase();
       }
       // Title case for normal words
@@ -588,12 +634,11 @@ function cleanAttributeName(key) {
     })
     .join(' ');
   
-  // Step 8: Add context to short/ambiguous names
-  if (cleanedKey.match(/^\d+$/)) {
-    return null; // Pure numbers are not attribute names
+  // Step 9: Final validation - reject if still looks like junk
+  if (cleanedKey.match(/^\d+$/) || cleanedKey.length > 50) {
+    return null; // Pure numbers or very long names
   }
   
-  console.log(`✅ Cleaned attribute: "${key}" → "${cleanedKey}"`);
   return cleanedKey;
 }
 
