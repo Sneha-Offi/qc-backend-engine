@@ -266,8 +266,16 @@ app.post('/api/qc-analysis', upload.array('files', 10), async (req, res) => {
     
     // Step 2: Search for vendor information
     console.log('🌐 Searching vendor information...');
-    const vendorResults = await searchVendor(vendorName, scrapedData.title);
-    console.log(`✅ Found ${vendorResults.length} vendor search results`);
+    let vendorResults = [];
+    
+    try {
+      vendorResults = await searchVendor(vendorName, scrapedData.title);
+      console.log(`✅ Found ${vendorResults.length} vendor search results`);
+    } catch (error) {
+      console.warn('⚠️ Vendor search failed (skipping):', error.message);
+      console.log('💡 Continuing analysis without web search results...');
+      // Continue without vendor search results (not critical)
+    }
     
     // Step 3: Parse uploaded files (PDFs, Excel, but NOT images)
     console.log('📂 Processing uploaded files...');
